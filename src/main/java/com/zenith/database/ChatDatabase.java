@@ -2,7 +2,7 @@ package com.zenith.database;
 
 import com.zenith.Proxy;
 import com.zenith.database.dto.records.ChatsRecord;
-import com.zenith.event.chat.PublicChatEvent;
+import com.zenith.event.chat.*;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -41,15 +41,17 @@ public class ChatDatabase extends LiveDatabase {
     public void subscribeEvents() {
         EVENT_BUS.subscribe(
             this,
-            of(PublicChatEvent.class, this::handlePublicChatEvent)
+            of(ChatEvent.class, this::handleChatEvent)
         );
     }
 
-    private void handlePublicChatEvent(PublicChatEvent event) {
-        if (!Proxy.getInstance().isOn2b2t() // only write on 2b2t
+    // XXX: CHANGES NOT TESTED
+    private void handleChatEvent(ChatEvent event) {
+        if (event.type() != MessageType.PUBLIC) return;
+        if (!Proxy.getInstance().isOn2b2t() // only write on 2b2t. thus it can be assumed that the message was parsed completely.
             || Proxy.getInstance().isInQueue()) return;  // ignore queue
         try {
-            writeChat(event.sender().getProfileId(), event.sender().getName(), event.extractMessageDefaultSchema(), Instant.now().atOffset(ZoneOffset.UTC));
+            writeChat(event.source().player().getProfileId(), event.source().player().getName(), event.message(), Instant.now().atOffset(ZoneOffset.UTC));
         } catch (final Exception e) {
             DATABASE_LOG.error("Failed handling chat: {}", event.message(), e);
         }

@@ -336,7 +336,7 @@ public class DiscordBot {
         } else {
             throw new RuntimeException("Unhandled message being replied to, aborting relay");
         }
-        return sender;
+        return sender.replace("\\_", "_");
     }
 
     private MessageCreateData commandEmbedOutputToMessage(final CommandContext context) {

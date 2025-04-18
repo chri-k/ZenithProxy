@@ -1,7 +1,6 @@
 package com.zenith.network.client.handler.incoming;
 
-import com.zenith.event.chat.PublicChatEvent;
-import com.zenith.event.chat.WhisperChatEvent;
+import com.zenith.event.chat.*;
 import com.zenith.network.client.ClientSession;
 import com.zenith.network.codec.PacketHandler;
 import com.zenith.util.ComponentSerializer;
@@ -13,6 +12,7 @@ import java.util.Optional;
 
 import static com.zenith.Globals.*;
 
+// XXX: CHANGES NOT TESTED
 public class PlayerChatHandler implements PacketHandler<ClientboundPlayerChatPacket, ClientSession> {
 
     @Override
@@ -39,28 +39,36 @@ public class PlayerChatHandler implements PacketHandler<ClientboundPlayerChatPac
                      ComponentSerializer.serializePlain(packet.getTargetName())
                 );
             }
+
+            String messageContent = ComponentSerializer.serializePlain(chatComponent);
+
             if (isWhisper) {
                 if (senderPlayerEntry.isEmpty()) {
-                    CLIENT_LOG.warn("No sender found for PlayerChatPacket whisper. chatType: {}, content: {}", chatType.translationKey(), ComponentSerializer.serializePlain(chatComponent));
+                    CLIENT_LOG.warn("No sender found for PlayerChatPacket whisper. chatType: {}, content: {}", chatType.translationKey(), messageContent);
                 } else if (whisperTarget.isEmpty()) {
-                    CLIENT_LOG.warn("No whisper target found for PlayerChatPacket whisper. chatType: {}, content: {}", chatType.translationKey(), ComponentSerializer.serializePlain(chatComponent));
+                    CLIENT_LOG.warn("No whisper target found for PlayerChatPacket whisper. chatType: {}, content: {}", chatType.translationKey(), messageContent);
                 } else {
                     boolean outgoing = "commands.message.display.outgoing".equals(chatType.translationKey());
-                    EVENT_BUS.postAsync(new WhisperChatEvent(
-                        outgoing,
-                        senderPlayerEntry.get(),
-                        whisperTarget.get(),
+                    EVENT_BUS.postAsync(new ChatEvent(
+                        MessageType.WHISPER,
+                        new ChatUser(senderPlayerEntry.get().getName(), ComponentSerializer.serializePlain(senderPlayerEntry.get().getDisplayName()), senderPlayerEntry.get()),
+                        new ChatUser(whisperTarget.get().getName(), ComponentSerializer.serializePlain(whisperTarget.get().getDisplayName()), whisperTarget.get()),
                         chatComponent,
-                        ComponentSerializer.serializePlain(chatComponent)));
+                        messageContent,
+                        messageContent
+                    ));
                 }
             } else {
                 if (senderPlayerEntry.isEmpty()) {
-                    CLIENT_LOG.warn("No sender found for PlayerChatPacket public chat. chatType: {}, content: {}", chatType.translationKey(), ComponentSerializer.serializePlain(chatComponent));
+                    CLIENT_LOG.warn("No sender found for PlayerChatPacket public chat. chatType: {}, content: {}", chatType.translationKey(), messageContent);
                 } else {
-                    EVENT_BUS.postAsync(new PublicChatEvent(
-                        senderPlayerEntry.get(),
+                    EVENT_BUS.postAsync(new ChatEvent(
+                        MessageType.PUBLIC,
+                        new ChatUser(senderPlayerEntry.get().getName(), ComponentSerializer.serializePlain(senderPlayerEntry.get().getDisplayName()), senderPlayerEntry.get()),
+                        new ChatUser(null, null, null),
                         chatComponent,
-                        ComponentSerializer.serializePlain(chatComponent)
+                        messageContent,
+                        messageContent
                     ));
                 }
             }

@@ -1,10 +1,7 @@
 package com.zenith.discord;
 
 import com.zenith.Proxy;
-import com.zenith.event.chat.DeathMessageChatEvent;
-import com.zenith.event.chat.PublicChatEvent;
-import com.zenith.event.chat.SystemChatEvent;
-import com.zenith.event.chat.WhisperChatEvent;
+import com.zenith.event.chat.*;
 import com.zenith.event.client.*;
 import com.zenith.event.message.DiscordMessageSentEvent;
 import com.zenith.event.message.PrivateMessageSendEvent;
@@ -89,9 +86,7 @@ public class NotificationEventListener {
             of(ActiveHoursConnectEvent.class, this::handleActiveHoursConnectEvent),
             of(DeathMessageChatEvent.class, this::handleDeathMessageChatEventKillMessage),
             of(DeathMessageChatEvent.class, this::handleDeathMessageChatEventChatRelay),
-            of(PublicChatEvent.class, this::handlePublicChatEvent),
-            of(SystemChatEvent.class, this::handleSystemChatEvent),
-            of(WhisperChatEvent.class, this::handleWhisperChatEvent),
+            of(ChatEvent.class, this::handleChatEvent),
             of(ServerPlayerConnectedEvent.class, this::handleServerPlayerConnectedEventChatRelay),
             of(ServerPlayerConnectedEvent.class, this::handleServerPlayerConnectedEventStalk),
             of(ServerPlayerDisconnectedEvent.class, this::handleServerPlayerDisconnectedEventChatRelay),
@@ -569,124 +564,110 @@ public class NotificationEventListener {
         sendEmbedMessage(embed);
     }
 
-    private void handleWhisperChatEvent(WhisperChatEvent event) {
-        if (!CONFIG.discord.chatRelay.whispers) return;
+    private void handleChatEvent(ChatEvent ev)
+    {
         if (!CONFIG.discord.chatRelay.enable || CONFIG.discord.chatRelay.channelId.isEmpty()) return;
         if (CONFIG.discord.chatRelay.ignoreQueue && Proxy.getInstance().isInQueue()) return;
+
         try {
-            String message = event.message();
-            String ping = "";
-            if (CONFIG.discord.chatRelay.mentionWhileConnected || isNull(Proxy.getInstance().getCurrentPlayer().get())) {
-                if (CONFIG.discord.chatRelay.mentionRoleOnWhisper && !event.outgoing()) {
-                    if (!message.toLowerCase(Locale.ROOT).contains("discord.gg/")
-                        && !PLAYER_LISTS.getIgnoreList().contains(event.sender().getName())) {
-                        ping = notificationMention();
-                    }
-                }
-            }
-            message = message.replace(event.sender().getName(), "**" + event.sender().getName() + "**");
-            message = message.replace(event.receiver().getName(), "**" + event.receiver().getName() + "**");
-            UUID senderUUID = event.sender().getProfileId();
-            final String avatarURL = Proxy.getInstance().getPlayerHeadURL(senderUUID).toString();
-            var embed = Embed.builder()
-                .description(escape(message))
-                .footer("\u200b", avatarURL)
-                .color(Color.MAGENTA);
-            if (ping.isEmpty()) {
-                sendRelayEmbedMessage(embed);
-            } else {
-                sendRelayEmbedMessage(ping, embed);
-            }
-        } catch (final Throwable e) {
-            DISCORD_LOG.error("Error processing WhisperChatEvent", e);
-        }
-    }
+        
+        final MessageType t = ev.type();
+        if (t == MessageType.PUBLIC && !CONFIG.discord.chatRelay.publicChats) return;
+        if (t == MessageType.WHISPER && !CONFIG.discord.chatRelay.whispers) return;
+        if (t == MessageType.SYSTEM && !CONFIG.discord.chatRelay.serverMessages) return;
+        if (t == MessageType.PLAYERSTATUS) return; // XXX: placeholders
+        if (t == MessageType.DEATH) return;
+        // Messages of type OTHER indicate a bad schema, and are always sent.
 
-    private void handleSystemChatEvent(SystemChatEvent event) {
-        if (event.isUnresolvedPublicChat())
+        boolean customFormatting = true; // XXX: debug
+
+
+        var sender = ev.source();
+        final boolean senderResolved = sender.isResolved();
+
+        var target = ev.target();
+        final boolean targetResolved = target.isResolved();
+
+        // these may be null if names were not resolved
+        final String senderName = senderResolved ? sender.player().getName() : sender.name();
+        final String targetName = targetResolved ? target.player().getName() : target.name();
+
+        String message = ev.messageContent();
+        String finalMessage = ev.message();
+
+        customFormatting &= message != null;
+
+        final boolean own = senderResolved && senderName.equalsIgnoreCase(CONFIG.authentication.username);
+
+        final UUID senderUUID = senderResolved ? sender.player().getProfileId() : null;
+        var avatarURL = senderUUID == null ? null : Proxy.getInstance().getPlayerHeadURL(senderUUID).toString();
+
+        var color = Color.RUBY;
+        boolean ping = false;
+
+        boolean ignore = (CONFIG.discord.chatRelay.mentionResolvedOnly && !senderResolved) 
+            || PLAYER_LISTS.getIgnoreList().contains(senderName);
+
+        switch (t)
         {
-            if (!CONFIG.discord.chatRelay.publicChats) return;
-        } else if (event.isUnresolvedWhisper())
-        {
-            if (!CONFIG.discord.chatRelay.whispers) return;
+            case MessageType.OTHER:
+                color = Color.RUBY; 
+                break;
+
+            case MessageType.SYSTEM:
+                color = Color.MOON_YELLOW;
+                if (Proxy.getInstance().isOn2b2t() ) avatarURL = Proxy.getInstance().getPlayerHeadURL("Hausemaster").toString();
+                break;
+
+            case MessageType.PUBLIC:
+                color = Color.BLACK;
+
+                if (CONFIG.discord.chatRelay.mentionRoleOnNameMention)
+                    ping |= Arrays.asList(message.toLowerCase().split(" ")).contains(CONFIG.authentication.username.toLowerCase());
+                
+                if (message != null && message.startsWith(">")) color = Color.MEDIUM_SEA_GREEN;
+
+                if (customFormatting && senderName != null) finalMessage = "**" + senderName + ":** " + message;
+                break;
+
+            case MessageType.WHISPER:
+                color = Color.MAGENTA;
+                ping |= CONFIG.discord.chatRelay.mentionRoleOnWhisper;
+
+                if (customFormatting && senderName != null && !own)
+                    finalMessage = "**" + senderName + "** whispers: " + message;
+                if (customFormatting && targetName != null && own)
+                    finalMessage = "whisper to **" + targetName + "**: " + message;
+                break;
+
+            // XXX: placeholders
+            case MessageType.DEATH:
+                break;
+            case MessageType.PLAYERSTATUS:
+                break; 
+                
         }
-        else if (!CONFIG.discord.chatRelay.serverMessages) return;
 
-        if (!CONFIG.discord.chatRelay.enable || CONFIG.discord.chatRelay.channelId.isEmpty()) return;
-        if (CONFIG.discord.chatRelay.ignoreQueue && Proxy.getInstance().isInQueue()) return;
-        try {
-            String message = event.message();
-            final String avatarURL = Proxy.getInstance().isOn2b2t() ? Proxy.getInstance().getPlayerHeadURL("Hausemaster").toString() : null;
-
-            var color = Color.MOON_YELLOW;
-            String ping = "";
-
-            if (event.isUnresolvedPublicChat()) color = Color.BLACK;
-            if (event.isUnresolvedWhisper()) color = Color.MAGENTA;
-
-            if (event.isUnresolvedIncomingWhisper() && CONFIG.discord.chatRelay.mentionRoleOnWhisper 
-                && !CONFIG.discord.chatRelay.mentionResolvedOnly)
-            {
-                if (CONFIG.discord.chatRelay.mentionWhileConnected || isNull(Proxy.getInstance().getCurrentPlayer().get()))
-                {
-                    ping = notificationMention();
-                }
-            }
-
-            var embed = Embed.builder()
-                .description(escape(message))
+        var embed = Embed.builder()
+                .description(escape(finalMessage))
                 .footer("\u200b", avatarURL)
                 .color(color);
-            sendRelayEmbedMessage(ping, embed);
+
+        ping &= CONFIG.discord.chatRelay.mentionWhileConnected || isNull(Proxy.getInstance().getCurrentPlayer().get());
+        ping &= !ignore;
+        ping &= !own;
+        
+        if (ping)
+        {
+            sendRelayEmbedMessage(notificationMention(), embed);
+        } else 
+        {
+            sendRelayEmbedMessage(embed);
+        }
 
         } catch (final Throwable e) {
-            DISCORD_LOG.error("Error processing SystemChatEvent", e);
-        }
-    }
-
-    private void handlePublicChatEvent(PublicChatEvent event) {
-        if (!CONFIG.discord.chatRelay.publicChats) return;
-        if (!CONFIG.discord.chatRelay.enable || CONFIG.discord.chatRelay.channelId.isEmpty()) return;
-        if (CONFIG.discord.chatRelay.ignoreQueue && Proxy.getInstance().isInQueue()) return;
-        try {
-            String message = event.message();
-            boolean customSenderFormatting = false;
-            Color color = Color.BLACK;
-            if (!event.isDefaultMessageSchema()) {
-                if (Proxy.getInstance().isOn2b2t()) {
-                    DISCORD_LOG.error("Received non-default schema chat message on 2b2t: {}", message);
-                }
-            } else {
-                message = event.extractMessageDefaultSchema();
-                customSenderFormatting = true;
-                if (message.startsWith(">")) color = Color.MEDIUM_SEA_GREEN;
-            }
-            String ping = "";
-            if (CONFIG.discord.chatRelay.mentionWhileConnected || isNull(Proxy.getInstance().getCurrentPlayer().get())) {
-                if (CONFIG.discord.chatRelay.mentionRoleOnNameMention
-                    && event.sender().getName().equals(CONFIG.authentication.username)
-                    && !PLAYER_LISTS.getIgnoreList().contains(event.sender().getName())
-                    && Arrays.asList(message.toLowerCase().split(" ")).contains(CONFIG.authentication.username.toLowerCase())) {
-                    ping = notificationMention();
-                }
-            }
-            if (customSenderFormatting) {
-                message = "**" + event.sender().getName() + ":** " + message;
-            }
-            UUID senderUUID = event.sender().getProfileId();
-            final String avatarURL = Proxy.getInstance().getPlayerHeadURL(senderUUID).toString();
-            var embed = Embed.builder()
-                .description(escape(message))
-                .footer("\u200b", avatarURL)
-                .color(color);
-            if (ping.isEmpty()) {
-                sendRelayEmbedMessage(embed);
-            } else {
-                sendRelayEmbedMessage(ping, embed);
-            }
-        } catch (final Throwable e) {
-            DISCORD_LOG.error("Error processing PublicChatEvent", e);
-        }
+            DISCORD_LOG.error("Error processing ChatEvent", e);
+        } 
     }
 
     private void handleDeathMessageChatEventKillMessage(DeathMessageChatEvent event) {
@@ -794,6 +775,7 @@ public class NotificationEventListener {
                             break;
                         }
                     }
+                    DEFAULT_LOG.info("... [" + sender + "]");
                     if (!pm) Proxy.getInstance().getClient().sendAsync(new ServerboundChatPacket("/w " + sender + " " + event.message()));
                 }
             } catch (final Exception e) {

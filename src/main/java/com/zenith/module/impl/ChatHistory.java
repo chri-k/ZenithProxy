@@ -1,9 +1,7 @@
 package com.zenith.module.impl;
 
 import com.github.rfresh2.EventConsumer;
-import com.zenith.event.chat.PublicChatEvent;
-import com.zenith.event.chat.SystemChatEvent;
-import com.zenith.event.chat.WhisperChatEvent;
+import com.zenith.event.chat.*;
 import com.zenith.event.client.ClientDisconnectEvent;
 import com.zenith.event.player.PlayerLoginEvent;
 import com.zenith.event.player.SpectatorLoggedInEvent;
@@ -26,9 +24,7 @@ public class ChatHistory extends Module {
     @Override
     public List<EventConsumer<?>> registerEvents() {
         return List.of(
-            of(PublicChatEvent.class, this::handlePublicChat),
-            of(WhisperChatEvent.class, this::handleWhisperChat),
-            of(SystemChatEvent.class, this::handleSystemChat),
+            of(ChatEvent.class, this::handleChat),
             of(PlayerLoginEvent.Post.class, this::handleClientLoggedIn),
             of(SpectatorLoggedInEvent.class, this::handleSpectatorLoggedIn),
             of(ClientDisconnectEvent.class, this::handleDisconnect)
@@ -45,16 +41,7 @@ public class ChatHistory extends Module {
         return CONFIG.server.extra.chatHistory.enable;
     }
 
-
-    private void handleSystemChat(SystemChatEvent event) {
-        chatHistory.add(new StoredChat(event.component(), Instant.now()));
-    }
-
-    private void handleWhisperChat(WhisperChatEvent event) {
-        chatHistory.add(new StoredChat(event.component(), Instant.now()));
-    }
-
-    private void handlePublicChat(PublicChatEvent event) {
+    private void handleChat(ChatEvent event) {
         chatHistory.add(new StoredChat(event.component(), Instant.now()));
     }
 

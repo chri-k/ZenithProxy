@@ -1,10 +1,7 @@
 package com.zenith.network.client.handler.incoming;
 
 import com.zenith.Proxy;
-import com.zenith.event.chat.DeathMessageChatEvent;
-import com.zenith.event.chat.PublicChatEvent;
-import com.zenith.event.chat.SystemChatEvent;
-import com.zenith.event.chat.WhisperChatEvent;
+import com.zenith.event.chat.*;
 import com.zenith.event.queue.QueueSkipEvent;
 import com.zenith.event.server.ClientDeathMessageEvent;
 import com.zenith.feature.deathmessages.DeathMessageParseResult;
@@ -34,6 +31,8 @@ public class SystemChatHandler implements ClientEventLoopPacketHandler<Clientbou
 
             final boolean essentialsChat = CONFIG.client.extra.chat.essentialsFormatting;
 
+            MessageType ev = MessageType.OTHER;
+
             if (CONFIG.client.extra.logChatMessages) {
                 var component = packet.getContent();
                 if (Proxy.getInstance().isInQueue()) {
@@ -44,31 +43,49 @@ public class SystemChatHandler implements ClientEventLoopPacketHandler<Clientbou
                 }
                 CHAT_LOG.info(component);
             }
+
             final Component component = packet.getContent();
             final String messageString = ComponentSerializer.serializePlain(component);
             Optional<DeathMessageParseResult> deathMessage = Optional.empty();
+
+            String decoratedSenderName = null;
+            String decoratedTargetName = null;
+
             String senderName = null;
-            String whisperTarget = null;
+            String targetName = null;
+            String messageContent = null;
+
             if (!messageString.startsWith("<") && Proxy.getInstance().isOn2b2t())
                 deathMessage = parseDeathMessage2b2t(component, deathMessage, messageString);
-            if (messageString.startsWith("<")) {
-                senderName = extractSenderNameNormalChat(messageString);
+            if (ev == MessageType.OTHER && messageString.startsWith("<")) {
+                decoratedSenderName = extractSenderNameNormalChat(messageString);
+                messageContent = extractMessageContentNormalChat(messageString);
+                ev = MessageType.PUBLIC;
             } 
-            else if (deathMessage.isEmpty()) {
+
+            if (ev == MessageType.OTHER && deathMessage.isPresent()) ev = MessageType.DEATH;
+
+            else if (ev == MessageType.OTHER) {
                 if (essentialsChat && messageString.startsWith("["))
                 {
+                    Integer end = findMatchingBracket(messageString, 0);
+
                     // [$senderName -> me] $messageText
                     // [me -> $whisperTarget] $messageText
-                    final String inner = extractBracketContents(messageString, 0);
+                    final String inner = messageString.substring(1, end);
                     if (inner.endsWith(" -> me")) 
                     {
-                        senderName = inner.substring(0, inner.length() - 6);
-                        whisperTarget = CONFIG.authentication.username;
+                        decoratedSenderName = inner.substring(0, inner.length() - 6);
+                        targetName = CONFIG.authentication.username;
+                        messageContent = messageString.substring(end + 1);
+                        ev = MessageType.WHISPER;
                     }
                     else if (inner.startsWith("me -> "))
                     {
                         senderName = CONFIG.authentication.username;
-                        whisperTarget = inner.substring(6);
+                        decoratedTargetName = inner.substring(6);
+                        messageContent = messageString.substring(end + 1);
+                        ev = MessageType.WHISPER;
                     }
                 }
                 else
@@ -76,65 +93,61 @@ public class SystemChatHandler implements ClientEventLoopPacketHandler<Clientbou
                     final String[] split = messageString.split(" ");
                     if (split.length > 2) {
                         if (split[1].startsWith("whispers")) {
-                            senderName = extractSenderNameReceivedWhisper(split);
-                            whisperTarget = CONFIG.authentication.username;
+                            decoratedSenderName = extractSenderNameReceivedWhisper(split);
+                            targetName = CONFIG.authentication.username;
+                            ev = MessageType.WHISPER;
                         } else if (messageString.startsWith("to ")) {
                             senderName = CONFIG.authentication.username;
-                            whisperTarget = extractReceiverNameSentWhisper(split);
+                            decoratedTargetName = extractReceiverNameSentWhisper(split);
+                            ev = MessageType.WHISPER;
                         }
                     }
                 }
             }
 
-            final String decoratedSenderName = senderName;
-            final String decoratedWhisperTarget = whisperTarget;
+            if (ev == MessageType.OTHER) ev = MessageType.SYSTEM;
 
             // Try to strip any ranks or other decoration from the names
-            if (essentialsChat && senderName != null)
+            if (decoratedSenderName != null && senderName == null)
             {
-                final String[] split = senderName.split(" ");
+                final String[] split = decoratedSenderName.split(" ");
                 senderName = split[split.length - 1];
             }
-            if (essentialsChat && whisperTarget != null)
+            if (decoratedTargetName != null && targetName == null)
             {
-                final String[] split = whisperTarget.split(" ");
-                whisperTarget = split[split.length - 1];
+                final String[] split = decoratedTargetName.split(" ");
+                targetName = split[split.length - 1];
             }
 
-            var sender = Optional.ofNullable(senderName).flatMap(t -> CACHE.getTabListCache().getFromName(t));
-            var playerWhisperTarget = Optional.ofNullable(whisperTarget).flatMap(t -> CACHE.getTabListCache().getFromName(t));
+            var sourcePlayer = Optional.ofNullable(senderName).flatMap(t -> CACHE.getTabListCache().getFromName(t));
+            var targetPlayer = Optional.ofNullable(targetName).flatMap(t -> CACHE.getTabListCache().getFromName(t));
+
+            if (decoratedTargetName == null) decoratedTargetName = targetName;
+            if (decoratedSenderName == null) decoratedSenderName = senderName;
 
             // The above attempt at getting the player name failed. Try to match the full display name against a display name in tab instead.
-            if (sender.isEmpty() && decoratedSenderName != null && essentialsChat)
+            if (sourcePlayer.isEmpty() && decoratedSenderName != null)
             {
-                sender = Optional.ofNullable(decoratedSenderName).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
+                sourcePlayer = Optional.ofNullable(decoratedSenderName).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
             }
-            if (playerWhisperTarget.isEmpty() && decoratedWhisperTarget != null && essentialsChat)
+            if (targetPlayer.isEmpty() && decoratedTargetName != null)
             {
-                playerWhisperTarget = Optional.ofNullable(decoratedWhisperTarget).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
+                targetPlayer = Optional.ofNullable(decoratedTargetName).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
             }
 
             // Try to match the clipped display name against a display name in tab too.
-            if (sender.isEmpty() && senderName != null && essentialsChat)
+            if (sourcePlayer.isEmpty() && senderName != null)
             {
-                sender = Optional.ofNullable(senderName).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
+                sourcePlayer = Optional.ofNullable(senderName).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
             }
-            if (playerWhisperTarget.isEmpty() && whisperTarget != null && essentialsChat)
+            if (targetPlayer.isEmpty() && targetName != null)
             {
-                playerWhisperTarget = Optional.ofNullable(whisperTarget).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
-            }
-
-            // Mark false-positive system messages caused by unresolved names, so chatRelay still handles them correctly.
-            final boolean isUnresolvedIncomingWhisper = sender.isEmpty() && playerWhisperTarget.isPresent() 
-                && playerWhisperTarget.get().getName().equalsIgnoreCase(CONFIG.authentication.username);
-            final boolean isUnresolvedWhisper = whisperTarget != null && (playerWhisperTarget.isEmpty() || sender.isEmpty());
-            final boolean isUnresolvedPublicChat = whisperTarget == null && senderName != null && sender.isEmpty();
-
-            if (isUnresolvedWhisper) 
-            {
-                sender = Optional.empty();
+                targetPlayer = Optional.ofNullable(targetName).flatMap(t -> CACHE.getTabListCache().getFromDisplayName(t));
             }
 
+            var sourceUser = new ChatUser(senderName, decoratedSenderName, sourcePlayer.isPresent() ? sourcePlayer.get() : null);
+            var targetUser = new ChatUser(targetName, decoratedTargetName, targetPlayer.isPresent() ? targetPlayer.get() : null);
+            
             if (Proxy.getInstance().isOn2b2t()
                 && "Reconnecting to server 2b2t.".equals(messageString)
                 && NamedTextColor.GOLD.equals(component.style().color())) {
@@ -142,15 +155,12 @@ public class SystemChatHandler implements ClientEventLoopPacketHandler<Clientbou
                 EVENT_BUS.postAsync(QueueSkipEvent.INSTANCE);
             }
 
-            if (sender.isPresent() && deathMessage.isEmpty() && playerWhisperTarget.isEmpty()) {
-                EVENT_BUS.postAsync(new PublicChatEvent(sender.get(), component, messageString));
-            } else if (sender.isPresent() && deathMessage.isEmpty() && playerWhisperTarget.isPresent()) {
-                var outgoing = sender.get().getName().equalsIgnoreCase(CONFIG.authentication.username);
-                EVENT_BUS.postAsync(new WhisperChatEvent(outgoing, sender.get(), playerWhisperTarget.get(), component, messageString));
-            } else if (sender.isEmpty() && deathMessage.isPresent() && playerWhisperTarget.isEmpty()) {
+            if (ev == MessageType.DEATH)
+            {
                 EVENT_BUS.postAsync(new DeathMessageChatEvent(deathMessage.get(), component, messageString));
-            } else {
-                EVENT_BUS.postAsync(new SystemChatEvent(component, messageString, isUnresolvedPublicChat, isUnresolvedWhisper, isUnresolvedIncomingWhisper));
+            } else 
+            {
+                EVENT_BUS.postAsync(new ChatEvent(ev, sourceUser, targetUser, component, messageString, messageContent));
             }
         } catch (final Exception e) {
             CLIENT_LOG.error("Caught exception in ChatHandler. Packet: {}", packet, e);
@@ -177,6 +187,10 @@ public class SystemChatHandler implements ClientEventLoopPacketHandler<Clientbou
         return message.substring(message.indexOf("<") + 1, message.indexOf(">"));
     }
 
+    private String extractMessageContentNormalChat(final String message) {
+        return message.substring(message.indexOf(">") + 1).trim();
+    }
+
     private String extractSenderNameReceivedWhisper(final String[] messageSplit) {
         return messageSplit[0].trim();
     }
@@ -185,7 +199,7 @@ public class SystemChatHandler implements ClientEventLoopPacketHandler<Clientbou
         return messageSplit[1].replace(":", "");
     }
 
-    private String extractBracketContents(final String _str, Integer index) {
+    private Integer findMatchingBracket(final String _str, Integer index) {
         final char[] str = _str.toCharArray();
         Integer level = 0;
         for (Integer i = index; i < _str.length(); i++)
@@ -193,9 +207,9 @@ public class SystemChatHandler implements ClientEventLoopPacketHandler<Clientbou
             if (str[i] == '[') level++;
             if (str[i] == ']' && --level == 0)
             {
-                return _str.substring(index + 1, i);
+                return i;
             }
         }
-        return "";
+        return index;
     }
 }
